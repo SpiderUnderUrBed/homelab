@@ -1,0 +1,36 @@
+{
+  "root": "/home/spiderunderurbed/ansible/step-ca/certs/root_ca.crt",
+  "federatedRoots": null,
+  "crt": "/home/spiderunderurbed/ansible/step-ca/certs/intermediate_ca.crt",
+  "key": "/home/spiderunderurbed/ansible/step-ca/certs/intermediate_ca.key",
+  "address": ":9001",
+  "insecureAddress": "9002",
+  "dnsNames": [
+    "localhost"
+  ],
+  "logger": {
+    "format": "text",
+    "level": "info",
+    "output": "/home/spiderunderurbed/ansible/step-ca/logs/ca.log"
+  },
+  "authority": {
+    "provisioners": [
+    ],
+    "template": {},
+    "backdate": "59m0s",
+    "certificate": {
+      "defaultDuration": "8760h0m0s"
+    }
+  },
+  "tls": {
+    "cipherSuites": [
+      "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+      "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+    ],
+    "minVersion": 1.2,
+    "maxVersion": 1.3,
+    "renegotiation": false
+  },
+  "password": "[Redacted]",
+  "commonName": "Step Online CA"
+}
