@@ -1,0 +1,188 @@
+---
+- name: Set up step-ca and Generate Certificates
+  hosts: localhost
+  vars:
+    ca_root_key_path: "/home/spiderunderurbed/ansible/step-ca/certs/root_ca.key"
+    ca_root_crt_path: "/home/spiderunderurbed/ansible/step-ca/certs/root_ca.crt"
+    ca_intermediate_key_path: "/home/spiderunderurbed/ansible/step-ca/certs/intermediate_ca.key"
+    ca_intermediate_crt_path: "/home/spiderunderurbed/ansible/step-ca/certs/intermediate_ca.crt"
+    ca_json_path: "/home/spiderunderurbed/ansible/step-ca/ca.json"
+    ca_url: "https://localhost:9001"
+    root_password: "your_root_password"
+    intermediate_password: "your_intermediate_password"
+    jwk_password: "test"
+    hostname: "{{ hostname }}"
+  tasks:
+    - name: Create password file for root certificate
+      ansible.builtin.copy:
+        dest: "/home/spiderunderurbed/ansible/step-ca/certs/root_password.txt"
+        content: "{{ root_password }}"
+        mode: '0600'
+
+    - name: Generate Root Certificate
+      ansible.builtin.command:
+        cmd: "step certificate create 'Root CA' {{ ca_root_crt_path }} {{ ca_root_key_path }} --profile root-ca --password-file /home/spiderunderurbed/ansible/step-ca/certs/root_password.txt"
+
+    - name: Create password file for intermediate certificate
+      ansible.builtin.copy:
+        dest: "/home/spiderunderurbed/ansible/step-ca/certs/intermediate_password.txt"
+        content: "{{ intermediate_password }}"
+        mode: '0600'
+
+    - name: Generate Intermediate Certificate
+      ansible.builtin.command:
+        cmd: "step certificate create 'Intermediate CA' {{ ca_intermediate_crt_path }} {{ ca_intermediate_key_path }} --profile intermediate-ca --ca {{ ca_root_crt_path }} --ca-key {{ ca_root_key_path }} --password-file /home/spiderunderurbed/ansible/step-ca/certs/intermediate_password.txt --ca-password-file /home/spiderunderurbed/ansible/step-ca/certs/root_password.txt"
+
+    - name: Update ca.json with Certificate Paths
+      ansible.builtin.lineinfile:
+        path: "{{ ca_json_path }}"
+        regexp: '^(\s*"root": )'
+        line: '  "root": "{{ ca_root_crt_path }}",'
+
+    - name: Add intermediate certificate path to ca.json
+      ansible.builtin.lineinfile:
+        path: "{{ ca_json_path }}"
+        regexp: '^(\s*"crt": )'
+        line: '  "crt": "{{ ca_intermediate_crt_path }}",'
+
+    - name: Add in the key certificate path to ca.json
+      ansible.builtin.lineinfile:
+        path: "{{ ca_json_path }}"
+        regexp: '^\s*"key": '
+        line: '  "key": "{{ ca_intermediate_key_path }}",'
+        firstmatch: true
+
+    - name: Create password file for JWK
+      ansible.builtin.copy:
+        dest: "/home/spiderunderurbed/ansible/step-ca/certs/jwk_password.txt"
+        content: "{{ jwk_password }}"
+        mode: '0600'
+
+    - name: Generate kid, x, and y values
+      ansible.builtin.command:
+        cmd: "step crypto jwk create --kty=EC --curve=P-256 /home/spiderunderurbed/ansible/step-ca/certs/public.jwk /home/spiderunderurbed/ansible/step-ca/certs/private.jwk --password-file /home/spiderunderurbed/ansible/step-ca/certs/jwk_password.txt"
+      register: provisioner_key_generation
+
+    - name: Read public JWK file contents
+      ansible.builtin.slurp:
+        src: "/home/spiderunderurbed/ansible/step-ca/certs/public.jwk"
+      register: public_jwk_contents
+
+    - name: Read private JWK file contents
+      ansible.builtin.slurp:
+        src: "/home/spiderunderurbed/ansible/step-ca/certs/private.jwk"
+      register: private_jwk_contents
+
+    - name: Parse public JWK file contents
+      ansible.builtin.set_fact:
+        public_jwk_json: "{{ public_jwk_contents.content | b64decode | from_json }}"
+
+#    - name: Parse private JWK file contents
+#      ansible.builtin.set_fact:
+#        private_jwk_json: "{{ private_jwk_contents.content | b64decode | from_json }}"
+
+    - name: Format JWK using step crypto jose format
+      shell: sudo cat /home/spiderunderurbed/ansible/step-ca/certs/private.jwk | step crypto jose format
+      register: formatted_jwk
+      changed_when: false
+
+    - name: Set encryptedKey fact
+      set_fact:
+        encrypted_key: "{{ formatted_jwk.stdout }}"
+
+    - name: Set fact for x value
+      ansible.builtin.set_fact:
+        provisioner_x_value: "{{ public_jwk_json.x }}"
+
+    - name: Set fact for y value
+      ansible.builtin.set_fact:
+        provisioner_y_value: "{{ public_jwk_json.y }}"
+
+    - name: Set fact for kid value
+      ansible.builtin.set_fact:
+        provisioner_kid_value: "{{ public_jwk_json.kid }}"
+
+    - name: Add new provisioner to ca.json
+      ansible.builtin.shell: |
+        jq '.authority.provisioners += [{
+          "type": "jwk",
+          "name": "SpiderUnderUrBed@proton.me",
+          "encryptedKey": "{{ encrypted_key  }}",
+          "key": {
+            "use": "sig",
+            "kty": "EC",
+            "crv": "P-256",
+            "alg": "ES256",
+            "x": "{{ provisioner_x_value }}",
+            "y": "{{ provisioner_y_value }}",
+            "kid": "{{ provisioner_kid_value }}"
+          },
+        }]' {{ ca_json_path }} > {{ ca_json_path }}.tmp && mv {{ ca_json_path }}.tmp {{ ca_json_path }}
+      register: provisioner_update
+      changed_when: provisioner_update.rc == 0
+
+#    - name: Trust the root certificate on the system - Copy the certificate
+#      ansible.builtin.command:
+#        cmd: "sudo cp {{ ca_root_crt_path }} /usr/local/share/ca-certificates/root_ca.crt"
+#      register: trust_root_certificate_copy
+#      changed_when: trust_root_certificate_copy.rc == 0
+
+ #   - name: Trust the root certificate on the system - Update trusted certificates
+#      ansible.builtin.command:
+#        cmd: "sudo update-ca-certificates"
+#      register: trust_root_certificate_update
+#      changed_when: trust_root_certificate_update.rc == 0
+
+#    - name: Debug - Verify the root certificate is trusted
+#      ansible.builtin.command:
+#        cmd: "openssl x509 -in /usr/local/share/ca-certificates/root_ca.crt -text -noout"
+#      register: verify_root_certificate
+#      changed_when: false
+
+#    - name: Debug - Print verification result
+#      debug:
+#        var: verify_root_certificate.stdout
+#    - name: Bootstrap the Step CA
+#      ansible.builtin.command: >
+#        step ca bootstrap --ca-url {{ ca_url }} --fingerprint $(step certificate fingerprint {{ ca_root_crt_path }})
+#      register: step_ca_bootstrap
+
+    - name: Start step-ca server
+      ansible.builtin.command: "step-ca --password-file /home/spiderunderurbed/ansible/step-ca/certs/intermediate_password.txt {{ ca_json_path }}"
+      async: 60
+      poll: 0
+      ignore_errors: true
+      register: step_ca_output
+
+    - name: Wait for step-ca to start
+      wait_for:
+        port: 443
+        host: localhost
+        timeout: 30
+
+- name: Create Certificate
+  hosts: ca
+  vars:
+    hostname: "{{ hostname }}"
+    ca_url: "https://localhost:9001"
+    ca_root_crt_path: "/home/spiderunderurbed/ansible/step-ca/certs/root_ca.crt"
+  tasks:
+    - name: Create directory for certs
+      ansible.builtin.file:
+        path: "/home/spiderunderurbed/ansible/step-ca/{{ hostname }}"
+        state: directory
+        mode: '0644'
+
+    - name: Create certificate
+      ansible.builtin.command: >
+        step ca certificate {{ hostname }}
+        /home/spiderunderurbed/ansible/step-ca/{{ hostname }}/{{ hostname }}.crt
+        /home/spiderunderurbed/ansible/step-ca/{{ hostname }}/{{ hostname }}.key
+        --provisioner-password-file=/home/spiderunderurbed/ansible/step-ca/certs/jwk_password.txt
+        --ca-url={{ ca_url }}
+        --root={{ ca_root_crt_path }}
+        --not-before=10h
+      args:
+        creates: "/home/spiderunderurbed/ansible/step-ca/{{ hostname }}/{{ hostname }}.crt"
+
+- import_playbook: nginx.yml
