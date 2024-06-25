@@ -1,0 +1,98 @@
+---
+- name: Setup Nginx in Docker with HTTPS
+  hosts: localhost
+  vars:
+    src_cert_folder: "/home/spiderunderurbed/ansible/step-ca/{{ hostname }}"  # Local path to the folder containing certs and keys
+    dest_cert_folder: "/etc/nginx/ssl"         # Destination path on the target host
+    domain_name: "{{ hostname }}"              # Domain name for the Nginx server
+    local_service_port: 8000                   # Port where your local service is running
+    nginx_container_name: nginx_https_1          # Docker container name for Nginx
+    nginx_image: nginx:latest                  # Docker image for Nginx
+    cert_file_name: "{{ hostname }}.crt"       # Certificate file name
+    key_file_name: "{{ hostname }}.key"        # Key file name
+
+  tasks:
+    - name: Ensure destination folder exists
+      file:
+        path: "{{ dest_cert_folder }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy SSL certificate
+      copy:
+        src: "{{ src_cert_folder }}/{{ cert_file_name }}"
+        dest: "{{ dest_cert_folder }}/{{ cert_file_name }}"
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Copy SSL key
+      copy:
+        src: "{{ src_cert_folder }}/{{ key_file_name }}"
+        dest: "{{ dest_cert_folder }}/{{ key_file_name }}"
+        mode: '0600'
+        owner: root
+        group: root
+
+    - name: Create Nginx configuration file for HTTPS
+      copy:
+        dest: /etc/nginx/nginx.conf
+        content: |
+          events {
+              worker_connections 1024;
+          }
+
+          http {
+              server {
+                  listen 80;
+                  server_name {{ domain_name }};
+
+                  location / {
+                     proxy_pass http://192.168.68.77:{{ local_service_port }};
+                     #     return 301 https://$host$request_uri;
+                  }
+              }
+
+              server {
+                  listen 443 ssl;
+                  server_name {{ domain_name }};
+
+                  ssl_certificate {{ dest_cert_folder }}/{{ cert_file_name }};
+                  ssl_certificate_key {{ dest_cert_folder }}/{{ key_file_name }};
+
+                  ssl_protocols TLSv1.2 TLSv1.3;
+                  ssl_prefer_server_ciphers on;
+                  ssl_ciphers "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
+
+                  location / {
+                      proxy_pass http://192.168.68.77:{{ local_service_port }};
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                  }
+              }
+          }
+
+    - name: Pull Nginx Docker image
+      docker_image:
+        name: "{{ nginx_image }}"
+        source: pull
+
+    - name: Run Nginx container
+      docker_container:
+        name: "{{ nginx_container_name }}"
+        image: "{{ nginx_image }}"
+        state: started
+        restart_policy: always
+        ports:
+          - "8090:80"
+          - "7443:443"
+        volumes:
+          - "/etc/nginx/nginx.conf:/etc/nginx/nginx.conf"
+          - "{{ dest_cert_folder }}:/etc/nginx/ssl"
+
+    - name: Ensure Nginx container is running
+      docker_container:
+        name: "{{ nginx_container_name }}"
+        state: started
